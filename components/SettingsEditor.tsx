@@ -106,7 +106,7 @@ export function SettingsEditor({
       </div>
 
       {/* Sliders Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: "1rem" }}>
         {/* Text Size Slider */}
         <div className="slider-container">
           <div className="slider-header">
