@@ -27,8 +27,8 @@ export default async function RootLayout({
         </a>
 
         <header className="site-header" role="banner">
-          <Link href="/" className="site-brand" aria-label="Plainread Home">
-            <span>{APP_NAME}</span>
+          <Link href="/" className="site-brand" aria-label="Plainread Reading Aid — go to home page">
+            <span>{APP_NAME}</span>{" "}
             <span className="site-brand-badge">Reading Aid</span>
           </Link>
 
@@ -52,6 +52,11 @@ export default async function RootLayout({
             <p>
               <strong>Privacy note:</strong> When you request AI simplification, the article text is processed by Anthropic AI strictly to generate your chosen reading level. No health, diagnostic, or reading habit data is ever collected or stored.
             </p>
+            <nav aria-label="Legal and policy pages" className="site-footer-links">
+              <Link href="/privacy">Privacy policy</Link>
+              <Link href="/terms">Terms of service</Link>
+              <Link href="/accessibility">Accessibility statement</Link>
+            </nav>
           </div>
         </footer>
       </body>

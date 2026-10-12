@@ -72,3 +72,8 @@ export type ThemeId = keyof typeof THEMES;
 
 export const ACCENT_COLOR = "#136F63"; // Deep teal
 export const PRIMARY_INK = "#1E2733";
+
+// AI Spend Controls
+export const GLOBAL_DAILY_SPEND_CAP_USD = 10.00; // Hard ceiling: $10/day across all users
+export const SOFT_PER_IP_DAILY_LIMIT_USD = 2.00; // Soft limit: $2/day per IP before throttling
+export const SPEND_ALERT_THRESHOLD_USD = 8.00; // Alert when daily spend reaches $8

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { createHash } from "node:crypto";
 import { getAnonId } from "@/lib/anon";
 import { store } from "@/lib/store";
 import {
@@ -8,7 +9,13 @@ import {
   buildUserPrompt,
   ParagraphInput,
 } from "@/lib/simplify-prompts";
-import { DAILY_FREE_SIMPLIFY_LIMIT } from "@/lib/site-constants";
+import {
+  DAILY_FREE_SIMPLIFY_LIMIT,
+  GLOBAL_DAILY_SPEND_CAP_USD,
+  SOFT_PER_IP_DAILY_LIMIT_USD,
+  SPEND_ALERT_THRESHOLD_USD,
+} from "@/lib/site-constants";
+import { logError, trackAggregateEvent, hashForLogging } from "@/lib/monitoring";
 
 export async function POST(req: NextRequest) {
   try {
@@ -62,6 +69,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 3b. Enforce global daily spend cap
+    const currentDailySpend = await store.getDailySpend(today);
+    if (currentDailySpend >= GLOBAL_DAILY_SPEND_CAP_USD) {
+      console.error(`[SPEND ALERT] Daily spend cap reached: $${currentDailySpend.toFixed(2)} / $${GLOBAL_DAILY_SPEND_CAP_USD.toFixed(2)}`);
+      return NextResponse.json(
+        {
+          error: "AI simplification is temporarily unavailable due to high demand. Please try again later.",
+        },
+        { status: 503 }
+      );
+    }
+
+    // 3c. Soft per-IP limit (throttle before hard cap)
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const ipHash = createHash("sha256").update(clientIp).digest("hex").substring(0, 16);
+    const ipDailySpend = await store.getIpDailySpend(ipHash, today);
+    if (ipDailySpend >= SOFT_PER_IP_DAILY_LIMIT_USD) {
+      return NextResponse.json(
+        {
+          error: "You have used a significant amount of AI simplification today. Please try again tomorrow.",
+        },
+        { status: 429 }
+      );
+    }
+
+    // 3d. Spend alert at threshold
+    if (currentDailySpend >= SPEND_ALERT_THRESHOLD_USD) {
+      console.warn(`[SPEND ALERT] Daily spend at $${currentDailySpend.toFixed(2)} (threshold: $${SPEND_ALERT_THRESHOLD_USD.toFixed(2)})`);
+    }
+
     // 4. Check API Key
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -94,6 +131,10 @@ export async function POST(req: NextRequest) {
     // Record usage
     await store.recordDailyUsage(anonId, docId, today);
 
+    // Track token usage for spend tracking
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+
     const validIndices = new Set(targetParagraphs.map((p) => p.index));
 
     const encoder = new TextEncoder();
@@ -113,6 +154,14 @@ export async function POST(req: NextRequest) {
           });
 
           for await (const chunk of anthropicStream) {
+            // Track token usage for spend accounting (blocker #3)
+            if (chunk.type === "message_start" && chunk.message.usage) {
+              totalInputTokens += chunk.message.usage.input_tokens || 0;
+            }
+            if (chunk.type === "message_delta" && chunk.usage) {
+              totalOutputTokens += chunk.usage.output_tokens || 0;
+            }
+
             if (
               chunk.type === "content_block_delta" &&
               chunk.delta.type === "text_delta"
@@ -173,6 +222,15 @@ export async function POST(req: NextRequest) {
           if (completedItems.length > 0) {
             await store.saveSimplification(docId, level, completedItems);
           }
+
+          // Record actual spend based on token usage
+          // claude-haiku-5-5 pricing (approximate): $0.80/MTok input, $4.00/MTok output
+          const inputCost = (totalInputTokens / 1_000_000) * 0.80;
+          const outputCost = (totalOutputTokens / 1_000_000) * 4.00;
+          const totalCost = inputCost + outputCost;
+          if (totalCost > 0) {
+            await store.recordSpend(today, totalCost, ipHash);
+          }
         } catch (streamErr: unknown) {
           console.error("AI stream error:", streamErr);
           const errorMsg = {
@@ -192,7 +250,12 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    console.error("Simplification handler error:", err);
+    logError(err as Error, {
+      path: req.url,
+      method: "POST",
+      anonIdHash: hashForLogging(await getAnonId().catch(() => "unknown")),
+    });
+    trackAggregateEvent("simplify_error");
     return NextResponse.json(
       { error: (err as Error).message || "Internal server error." },
       { status: 500 }

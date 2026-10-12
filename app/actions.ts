@@ -13,6 +13,7 @@ import {
   extractFromDocx,
   DocumentTooLargeError,
 } from "@/lib/extract";
+import { logError, trackAggregateEvent } from "@/lib/monitoring";
 
 export interface ActionState {
   error?: string;
@@ -69,10 +70,12 @@ export async function importPasteAction(
       sourceType: "paste",
     });
     docId = doc.id;
+    trackAggregateEvent("import_paste", { words: wordCount });
   } catch (err: unknown) {
     if (err instanceof DocumentTooLargeError) {
       return { error: err.message };
     }
+    logError(err as Error, { path: "/import", method: "action:importPasteAction" });
     return { error: (err as Error).message || "An unexpected error occurred while processing the text." };
   }
 
@@ -108,10 +111,13 @@ export async function importUrlAction(
       sourceUrl: finalUrl,
     });
     docId = doc.id;
+    trackAggregateEvent("import_url", { words: wordCount });
   } catch (err: unknown) {
     if (err instanceof DocumentTooLargeError || err instanceof FetchSecurityError) {
+      trackAggregateEvent("import_url", { blocked: err.name });
       return { error: err.message };
     }
+    logError(err as Error, { path: "/import", method: "action:importUrlAction" });
     return { error: (err as Error).message || "Failed to import web page." };
   }
 
@@ -172,10 +178,12 @@ export async function importFileAction(
       sourceType: "file",
     });
     docId = doc.id;
+    trackAggregateEvent("import_file", { words: wordCount });
   } catch (err: unknown) {
     if (err instanceof DocumentTooLargeError) {
       return { error: err.message };
     }
+    logError(err as Error, { path: "/import", method: "action:importFileAction" });
     return { error: (err as Error).message || "Failed to process the uploaded file." };
   }
 

@@ -1,5 +1,7 @@
 import dns from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 import net from "node:net";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export class FetchSecurityError extends Error {
   constructor(message: string) {
@@ -11,7 +13,7 @@ export class FetchSecurityError extends Error {
 /**
  * Checks if an IPv4 address is in a private, loopback, CGNAT, or reserved range.
  */
-function isDisallowedIpv4(ip: string): boolean {
+export function isDisallowedIpv4(ip: string): boolean {
   const parts = ip.split(".").map(Number);
   if (parts.length !== 4 || parts.some(isNaN)) return true;
 
@@ -40,7 +42,7 @@ function isDisallowedIpv4(ip: string): boolean {
 /**
  * Checks if an IPv6 address is private, loopback, link-local, multicast, or IPv4-mapped.
  */
-function isDisallowedIpv6(ip: string): boolean {
+export function isDisallowedIpv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
 
   // Loopback & Unspecified
@@ -69,8 +71,9 @@ function isDisallowedIpv6(ip: string): boolean {
 
 /**
  * Validates the protocol, port, and resolved IP addresses of a given URL.
+ * Returns the validated URL and a pinned connection target (IP + hostname for SNI).
  */
-async function validateUrlSafety(urlStr: string): Promise<URL> {
+async function validateUrlSafety(urlStr: string): Promise<{ parsed: URL; pinnedIp: string; hostname: string }> {
   let parsed: URL;
   try {
     parsed = new URL(urlStr);
@@ -91,33 +94,75 @@ async function validateUrlSafety(urlStr: string): Promise<URL> {
   if (!hostname) {
     throw new FetchSecurityError("Missing hostname in URL.");
   }
+  // hostname stays in `parsed` — the original URL is used for the request so
+  // TLS SNI and certificate identity verification use the real hostname.
 
   // Resolve hostname and verify resolved IPs against SSRF
-  // NOTE: For enterprise production, integrate DNS pinning (connecting directly to resolved IP with SNI verification)
-  // to eliminate Time-Of-Check to Time-Of-Use (TOCTOU) DNS rebinding risks.
+  let addresses: LookupAddress[];
   try {
-    const addresses = await dns.lookup(hostname, { all: true });
+    addresses = await dns.lookup(hostname, { all: true });
     if (!addresses || addresses.length === 0) {
       throw new FetchSecurityError("Could not resolve domain name.");
-    }
-
-    for (const record of addresses) {
-      if (record.family === 4) {
-        if (isDisallowedIpv4(record.address)) {
-          throw new FetchSecurityError("Access to internal, local, or private IP addresses is blocked.");
-        }
-      } else if (record.family === 6) {
-        if (isDisallowedIpv6(record.address)) {
-          throw new FetchSecurityError("Access to internal, local, or private IP addresses is blocked.");
-        }
-      }
     }
   } catch (err: unknown) {
     if (err instanceof FetchSecurityError) throw err;
     throw new FetchSecurityError("Failed to verify address safety for this domain.");
   }
 
-  return parsed;
+  // Filter to only safe addresses
+  const safeAddresses = addresses.filter((record) => {
+    if (record.family === 4) return !isDisallowedIpv4(record.address);
+    if (record.family === 6) return !isDisallowedIpv6(record.address);
+    return false;
+  });
+
+  if (safeAddresses.length === 0) {
+    throw new FetchSecurityError("Access to internal, local, or private IP addresses is blocked.");
+  }
+
+  // DNS Pinning: Pick the first safe address and use it directly for the connection.
+  // This eliminates the TOCTOU DNS rebinding gap — we connect to the validated IP
+  // and verify the TLS certificate matches the original hostname (SNI).
+  const pinnedIp = safeAddresses[0].address;
+
+  return { parsed, pinnedIp, hostname };
+}
+
+/**
+ * Builds an undici Agent that pins every connection to `pinnedIp`.
+ *
+ * DNS pinning (closes the TOCTOU / DNS-rebinding gap): the hostname is resolved
+ * and validated once in `validateUrlSafety`, then this agent makes every actual
+ * TCP connection go to that exact validated IP via a custom DNS lookup — so a
+ * rebind between check and use cannot redirect the request to an internal host.
+ *
+ * The URL keeps its original hostname, so TLS SNI and certificate identity
+ * verification still happen against the real hostname, not the pinned IP.
+ */
+function createPinnedAgent(pinnedIp: string): Agent {
+  const family = net.isIPv6(pinnedIp) ? 6 : 4;
+  return new Agent({
+    connect: {
+      // Custom lookup: never consult the system resolver at connect time,
+      // always return the pre-validated IP. undici may call this with
+      // `all: true` and expect an array, so support both shapes.
+      lookup: (
+        _hostname: string,
+        options: { all?: boolean } | undefined,
+        callback: (
+          err: Error | null,
+          address: string | LookupAddress[],
+          family?: number
+        ) => void
+      ) => {
+        if (options?.all) {
+          callback(null, [{ address: pinnedIp, family }]);
+        } else {
+          callback(null, pinnedIp, family);
+        }
+      },
+    },
+  });
 }
 
 export interface SafeFetchResult {
@@ -135,14 +180,21 @@ export async function safeFetchHtml(initialUrl: string): Promise<SafeFetchResult
   const maxBytes = 2 * 1024 * 1024; // 2 MB
 
   for (let hop = 0; hop <= maxHops; hop++) {
-    const parsed = await validateUrlSafety(currentUrl);
+    const { parsed, pinnedIp } = await validateUrlSafety(currentUrl);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
+    // DNS Pinning: every connection in this request is pinned to the validated IP.
+    // Re-validated from scratch on each redirect hop via validateUrlSafety above.
+    const pinnedAgent = createPinnedAgent(pinnedIp);
+
     let res: Response;
     try {
-      res = await fetch(parsed.toString(), {
+      // Use undici's fetch (same package as the pinned Agent) — Node's global
+      // fetch bundles a different undici version whose dispatcher contract
+      // does not match, which would silently break pinning.
+      res = (await undiciFetch(parsed.toString(), {
         method: "GET",
         headers: {
           "User-Agent": "Plainread/1.0 (+https://plainread.app; Reading Aid Content Importer)",
@@ -150,7 +202,8 @@ export async function safeFetchHtml(initialUrl: string): Promise<SafeFetchResult
         },
         redirect: "manual",
         signal: controller.signal,
-      });
+        dispatcher: pinnedAgent,
+      })) as unknown as Response;
     } catch (e: unknown) {
       clearTimeout(timeout);
       if ((e as { name?: string }).name === "AbortError") {

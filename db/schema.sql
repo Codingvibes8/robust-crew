@@ -33,3 +33,14 @@ CREATE TABLE IF NOT EXISTS usage_records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_anon_day ON usage_records(anon_id, day_date);
+
+CREATE TABLE IF NOT EXISTS spend_records (
+  id SERIAL PRIMARY KEY,
+  day_date VARCHAR(10) NOT NULL, -- 'YYYY-MM-DD'
+  amount_usd DECIMAL(10, 4) NOT NULL,
+  ip_hash VARCHAR(64) NOT NULL, -- SHA-256 hash of IP address
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_spend_day ON spend_records(day_date);
+CREATE INDEX IF NOT EXISTS idx_spend_ip_day ON spend_records(ip_hash, day_date);

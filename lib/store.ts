@@ -39,13 +39,17 @@ export interface Store {
   ): Promise<SimplificationRecord>;
   getDailyUsageCount(anonId: string, dayDate: string): Promise<number>;
   recordDailyUsage(anonId: string, docId: string, dayDate: string): Promise<number>;
+  getDailySpend(dayDate: string): Promise<number>;
+  recordSpend(dayDate: string, amountUsd: number, ipHash: string): Promise<void>;
+  getIpDailySpend(ipHash: string, dayDate: string): Promise<number>;
 }
 
 // In-Memory implementation
-class MemoryStore implements Store {
+export class MemoryStore implements Store {
   private docs = new Map<string, DocumentRecord>();
   private simplifications = new Map<string, SimplificationRecord>();
   private usage = new Set<string>(); // key: `${anonId}:${docId}:${dayDate}`
+  private dailySpend = new Map<string, number>(); // key: `${ipHash}:${dayDate}`
 
   async saveDocument(doc: Omit<DocumentRecord, "createdAt">): Promise<DocumentRecord> {
     const record: DocumentRecord = {
@@ -105,6 +109,25 @@ class MemoryStore implements Store {
     const key = `${anonId}:${docId}:${dayDate}`;
     this.usage.add(key);
     return this.getDailyUsageCount(anonId, dayDate);
+  }
+
+  async getDailySpend(dayDate: string): Promise<number> {
+    let total = 0;
+    for (const [key, amount] of this.dailySpend) {
+      if (key.endsWith(`:${dayDate}`)) {
+        total += amount;
+      }
+    }
+    return total;
+  }
+
+  async recordSpend(dayDate: string, amountUsd: number, ipHash: string): Promise<void> {
+    const key = `${ipHash}:${dayDate}`;
+    this.dailySpend.set(key, (this.dailySpend.get(key) ?? 0) + amountUsd);
+  }
+
+  async getIpDailySpend(ipHash: string, dayDate: string): Promise<number> {
+    return this.dailySpend.get(`${ipHash}:${dayDate}`) ?? 0;
   }
 }
 
@@ -207,6 +230,34 @@ class PgStore implements Store {
     await this.pool.query(query, [anonId, docId, dayDate]);
     return this.getDailyUsageCount(anonId, dayDate);
   }
+
+  async getDailySpend(dayDate: string): Promise<number> {
+    const query = `
+      SELECT COALESCE(SUM(amount_usd), 0) as total
+      FROM spend_records
+      WHERE day_date = $1
+    `;
+    const res = await this.pool.query(query, [dayDate]);
+    return parseFloat(res.rows[0].total) || 0;
+  }
+
+  async recordSpend(dayDate: string, amountUsd: number, ipHash: string): Promise<void> {
+    const query = `
+      INSERT INTO spend_records (day_date, amount_usd, ip_hash, created_at)
+      VALUES ($1, $2, $3, NOW())
+    `;
+    await this.pool.query(query, [dayDate, amountUsd, ipHash]);
+  }
+
+  async getIpDailySpend(ipHash: string, dayDate: string): Promise<number> {
+    const query = `
+      SELECT COALESCE(SUM(amount_usd), 0) as total
+      FROM spend_records
+      WHERE ip_hash = $1 AND day_date = $2
+    `;
+    const res = await this.pool.query(query, [ipHash, dayDate]);
+    return parseFloat(res.rows[0].total) || 0;
+  }
 }
 
 // Global singleton instance so memory state persists across hot-reloads during dev
@@ -222,7 +273,38 @@ function initStore(): Store {
       console.warn("Failed to connect to Postgres, falling back to MemoryStore", e);
     }
   }
+
+  // In production, refuse to serve without a persistent database.
+  // The in-memory fallback does not persist on serverless runtimes, so
+  // imported documents and quota counters would disappear between requests.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "DATABASE_URL is not set. Production deployments require PostgreSQL for persistence. " +
+      "Set the DATABASE_URL environment variable in your deployment environment."
+    );
+  }
+
+  console.warn(
+    "[store] DATABASE_URL is not set — using the in-memory store. " +
+    "Data will not persist between requests. This is only suitable for local development."
+  );
   return new MemoryStore();
 }
 
-export const store: Store = globalThis.__plainread_store__ ?? (globalThis.__plainread_store__ = initStore());
+function getStore(): Store {
+  if (!globalThis.__plainread_store__) {
+    globalThis.__plainread_store__ = initStore();
+  }
+  return globalThis.__plainread_store__;
+}
+
+// Lazy proxy so the production DATABASE_URL check fires on first use (a request),
+// not at module import time — otherwise `next build` (which runs with
+// NODE_ENV=production but no DATABASE_URL) would fail before any request happens.
+export const store: Store = new Proxy({} as Store, {
+  get(_target, prop) {
+    const real = getStore() as unknown as Record<string | symbol, unknown>;
+    const value = real[prop];
+    return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(real) : value;
+  },
+});

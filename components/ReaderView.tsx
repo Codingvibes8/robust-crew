@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
-import { DocumentRecord } from "@/lib/store";
+import { DocumentRecord, DocParagraph } from "@/lib/store";
 import { ReadingProfile } from "@/lib/profile";
 import { SettingsEditor } from "./SettingsEditor";
 import { SimplificationLevel } from "@/lib/simplify-prompts";
@@ -261,6 +261,18 @@ export function ReaderView({
   };
 
   const remainingQuota = Math.max(0, DAILY_FREE_SIMPLIFY_LIMIT - quotaUsed);
+
+  // Imported documents may start at any heading level (e.g. an article whose
+  // first heading is an <h2>). Render headings relative to the lowest level
+  // actually present so the outline never skips a level after the title <h1>.
+  const headingLevel = (t: DocParagraph["type"]): number =>
+    t === "h1" ? 1 : t === "h2" ? 2 : 3;
+  const minHeadingLevel = doc.paragraphs.reduce(
+    (min, p) => (["h1", "h2", "h3"].includes(p.type) ? Math.min(min, headingLevel(p.type)) : min),
+    4
+  );
+  const renderedHeadingLevel = (t: DocParagraph["type"]): number =>
+    Math.min(6, Math.max(2, 2 + (headingLevel(t) - minHeadingLevel)));
 
   return (
     <div style={{ position: "relative", minHeight: "100vh" }}>
@@ -583,25 +595,12 @@ export function ReaderView({
 
                 const paragraphClasses = isCurrentSpeechPara ? "speech-highlight-para" : "";
 
-                if (para.type === "h1") {
+                if (para.type === "h1" || para.type === "h2" || para.type === "h3") {
+                  const HeadingTag = `h${renderedHeadingLevel(para.type)}` as "h2" | "h3" | "h4";
                   return (
-                    <h2 key={para.id} className={paragraphClasses}>
+                    <HeadingTag key={para.id} className={paragraphClasses}>
                       {displayText}
-                    </h2>
-                  );
-                }
-                if (para.type === "h2") {
-                  return (
-                    <h3 key={para.id} className={paragraphClasses}>
-                      {displayText}
-                    </h3>
-                  );
-                }
-                if (para.type === "h3") {
-                  return (
-                    <h4 key={para.id} className={paragraphClasses}>
-                      {displayText}
-                    </h4>
+                    </HeadingTag>
                   );
                 }
 
