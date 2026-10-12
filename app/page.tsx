@@ -69,7 +69,7 @@ export default function HomePage() {
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))",
           gap: "1.5rem",
           maxWidth: "1050px",
           margin: "0 auto 3.5rem",
@@ -121,7 +121,9 @@ export default function HomePage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+            // min() keeps the minimum column from exceeding the container on
+            // narrow screens, which would otherwise force horizontal scroll.
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(260px, 100%), 1fr))",
             gap: "1.5rem",
           }}
         >

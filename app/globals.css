@@ -220,9 +220,10 @@ textarea.form-control {
   background-color: var(--r-surface);
   padding: 0.75rem 1.5rem;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
 }
 
 .site-brand {
@@ -242,12 +243,14 @@ textarea.form-control {
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .site-nav {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
 }
 
 .site-nav a {
@@ -255,6 +258,7 @@ textarea.form-control {
   min-height: 44px;
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
   border-radius: var(--ui-radius);
   color: var(--r-ink);
   text-decoration: none;
@@ -263,6 +267,41 @@ textarea.form-control {
 
 .site-nav a:hover {
   background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* Narrow screens: stack the brand above the nav so every link stays visible.
+   The nav wraps onto extra rows rather than scrolling or hiding behind a
+   menu, so nothing is removed from the keyboard or screen-reader order. */
+@media (max-width: 700px) {
+  .site-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .site-brand {
+    justify-content: flex-start;
+    min-height: 44px;
+  }
+
+  .site-nav {
+    justify-content: flex-start;
+    gap: 0.25rem;
+    margin: 0 -0.25rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .site-header {
+    padding: 0.75rem 0.75rem;
+  }
+
+  /* Keep touch targets at 44px while letting links share rows */
+  .site-nav a {
+    padding: 0.5rem 0.65rem;
+    font-size: 0.95rem;
+  }
 }
 
 /* Main Container */
